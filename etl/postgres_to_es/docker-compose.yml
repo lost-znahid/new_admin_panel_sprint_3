@@ -1,0 +1,72 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:15
+    env_file:
+      - .env
+    environment:
+      POSTGRES_USER: ${pg_user}
+      POSTGRES_PASSWORD: ${pg_password}
+      POSTGRES_DB: ${pg_db}
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./init-db:/docker-entrypoint-initdb.d
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - esnet
+
+  redis:
+    image: redis:7
+    ports:
+      - "6379:6379"
+    networks:
+      - esnet
+
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.9.0
+    container_name: elasticsearch
+    environment:
+      - "discovery.type=single-node"
+      - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
+      - "xpack.security.enabled=true"
+      - "xpack.security.transport.ssl.enabled=false"
+      - "xpack.security.http.ssl.enabled=false"
+      - "ELASTIC_PASSWORD=password"       # задаём пароль для elastic
+    volumes:
+      - ./elasticsearch.yml:/usr/share/elasticsearch/config/elasticsearch.yml:ro
+    ports:
+      - 9200:9200
+    networks:
+      - esnet
+
+  etl:
+    build: .
+    depends_on:
+      - postgres
+      - redis
+      - elasticsearch
+    env_file:
+      - .env
+    environment:
+      # Формируем DSN внутри контейнера на основе переменных .env
+      POSTGRES_DSN: "postgresql://${pg_user}:${pg_password}@${pg_host}:${pg_port}/${pg_db}"
+      # остальные переменные берем из .env напрямую
+      REDIS_HOST: ${redis_host}
+      REDIS_PORT: ${redis_port}
+      REDIS_DB: ${redis_db}
+      ES_HOST: ${es_host}
+      ES_INDEX: ${es_index}
+      BATCH_SIZE: ${batch_size}
+      POLL_INTERVAL: ${poll_interval}
+      BACKOFF_ON_ERROR: ${backoff_on_error}
+    networks:
+      - esnet
+volumes:
+  postgres_data:
+  es_data:
+
+networks:
+  esnet:
+    driver: bridge

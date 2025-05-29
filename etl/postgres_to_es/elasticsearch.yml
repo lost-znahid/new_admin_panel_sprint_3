@@ -1,0 +1,9 @@
+# elasticsearch.yml
+cluster.name: "docker-cluster"
+network.host: 0.0.0.0
+http.port: 9200
+
+# Включаем безопасность, но без SSL
+xpack.security.enabled: true
+xpack.security.transport.ssl.enabled: false
+xpack.security.http.ssl.enabled: false
