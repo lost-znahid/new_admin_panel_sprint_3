@@ -16,6 +16,11 @@ services:
       - postgres_data:/var/lib/postgresql/data
     networks:
       - esnet
+    healthcheck:  # <-- Добавлен healthcheck для Postgres
+      test: ["CMD-SHELL", "pg_isready -U ${pg_user} -d ${pg_db}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
 
   redis:
     image: redis:7
@@ -25,34 +30,34 @@ services:
       - esnet
 
   elasticsearch:
-    image: docker.elastic.co/elasticsearch/elasticsearch:8.9.0
-    container_name: elasticsearch
-    environment:
-      - "discovery.type=single-node"
-      - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
-      - "xpack.security.enabled=true"
-      - "xpack.security.transport.ssl.enabled=false"
-      - "xpack.security.http.ssl.enabled=false"
-      - "ELASTIC_PASSWORD=password"       # задаём пароль для elastic
-    volumes:
-      - ./elasticsearch.yml:/usr/share/elasticsearch/config/elasticsearch.yml:ro
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.6.2
     ports:
-      - 9200:9200
+      - "9200:9200"
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - http.host=0.0.0.0
     networks:
       - esnet
+    healthcheck:  # <-- Добавлен healthcheck для Elasticsearch
+      test: ["CMD-SHELL", "curl -f http://localhost:9200/_cluster/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   etl:
     build: .
     depends_on:
-      - postgres
-      - redis
-      - elasticsearch
+      postgres:
+        condition: service_healthy  # <-- Ждем, пока Postgres не станет healthy
+      elasticsearch:
+        condition: service_healthy  # <-- Ждем, пока Elasticsearch не станет healthy
+      redis:
+        condition: service_started  # Redis обычно запускается быстро
     env_file:
       - .env
     environment:
-      # Формируем DSN внутри контейнера на основе переменных .env
       POSTGRES_DSN: "postgresql://${pg_user}:${pg_password}@${pg_host}:${pg_port}/${pg_db}"
-      # остальные переменные берем из .env напрямую
       REDIS_HOST: ${redis_host}
       REDIS_PORT: ${redis_port}
       REDIS_DB: ${redis_db}
@@ -63,6 +68,7 @@ services:
       BACKOFF_ON_ERROR: ${backoff_on_error}
     networks:
       - esnet
+
 volumes:
   postgres_data:
   es_data:

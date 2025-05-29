@@ -9,9 +9,10 @@ from etl.transformer import Transformer
 from etl.loader import ElasticsearchLoader
 from etl.state import State, RedisStorage
 from config.settings import Settings
-from utils.logger import logger
+from utils.logger import get_logger
 import redis
 
+logger = get_logger(__name__)
 
 def backoff_hdlr(details):
     logger.warning(f"Backing off {details['wait']:0.1f}s after {details['tries']} tries "

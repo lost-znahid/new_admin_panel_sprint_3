@@ -1,14 +1,22 @@
 import logging
+import sys
 
-logger = logging.getLogger("etl_logger")
-logger.setLevel(logging.INFO)
 
-ch = logging.StreamHandler()
-ch.setLevel(logging.INFO)
+def get_logger(name):
+    """Настройка и возврат логгера"""
+    logger = logging.getLogger(name)
+    logger.setLevel(logging.INFO)
 
-formatter = logging.Formatter(
-    '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-ch.setFormatter(formatter)
+    formatter = logging.Formatter(
+        '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    )
 
-logger.addHandler(ch)
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setFormatter(formatter)
+    logger.addHandler(handler)
+
+    return logger
+
+
+# Создаем глобальный логгер для модуля
+logger = get_logger(__name__)

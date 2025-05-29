@@ -2,9 +2,9 @@ import psycopg2
 import psycopg2.extras
 import json
 from typing import List, Dict, Any
-from utils.logger import logger
+from datetime import datetime
+from utils.logger import get_logger
 from etl.state import State
-
 
 
 class PostgresExtractor:
@@ -15,7 +15,6 @@ class PostgresExtractor:
 
     def connect(self):
         conn = psycopg2.connect(self.dsn, cursor_factory=psycopg2.extras.DictCursor)
-        # Автоматическое преобразование jsonb -> dict
         psycopg2.extras.register_default_jsonb(conn, loads=json.loads)
         return conn
 
@@ -46,7 +45,17 @@ class PostgresExtractor:
             with conn.cursor() as cur:
                 cur.execute(query, (last_modified, self.batch_size))
                 records = cur.fetchall()
-
+                logger = get_logger(__name__)
                 logger.info(f"Extracted {len(records)} records from PostgreSQL")
 
-                return [dict(row) for row in records]
+                converted_records = []
+                for row in records:
+                    row_dict = dict(row)
+                    if "modified" in row_dict and isinstance(row_dict["modified"], datetime):
+                        row_dict["modified"] = row_dict["modified"].isoformat()
+                    converted_records.append(row_dict)
+
+                if converted_records:
+                    logger.info(f"Sample record: {converted_records[0]}")
+
+                return converted_records
