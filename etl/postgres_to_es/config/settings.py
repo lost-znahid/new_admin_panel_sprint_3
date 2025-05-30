@@ -20,11 +20,12 @@ class Settings(BaseSettings):
     poll_interval: int
     backoff_on_error: int
 
+    recreate_index: bool = False
+
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 
     def __init__(self, **values):
         super().__init__(**values)
-        # Формируем DSN, если не передан
         if not self.pg_dsn:
             self.pg_dsn = (
                 f"postgresql://{self.pg_user}:{self.pg_password}@"

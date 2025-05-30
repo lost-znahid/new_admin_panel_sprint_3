@@ -12,6 +12,7 @@ class PostgresExtractor:
         self.dsn = dsn
         self.state = state
         self.batch_size = batch_size
+        self.logger = get_logger(__name__)
 
     def connect(self):
         conn = psycopg2.connect(self.dsn, cursor_factory=psycopg2.extras.DictCursor)
@@ -22,14 +23,31 @@ class PostgresExtractor:
         last_modified = self.state.get_state("last_modified") or "1970-01-01T00:00:00"
 
         query = """
-            SELECT fw.id, fw.title, fw.description, fw.rating AS imdb_rating, fw.modified,
-                array_agg(DISTINCT g.name) AS genre,
-                json_agg(DISTINCT jsonb_build_object('id', p.id, 'name', p.full_name)) 
-                    FILTER (WHERE pfw.role = 'actor') AS actors,
-                json_agg(DISTINCT jsonb_build_object('id', p.id, 'name', p.full_name)) 
-                    FILTER (WHERE pfw.role = 'writer') AS writers,
-                json_agg(DISTINCT jsonb_build_object('id', p.id, 'name', p.full_name)) 
-                    FILTER (WHERE pfw.role = 'director') AS directors
+            SELECT 
+                fw.id, 
+                fw.title, 
+                fw.description, 
+                fw.rating AS imdb_rating, 
+                fw.modified,
+                COALESCE(
+                    array_agg(DISTINCT g.name) FILTER (WHERE g.name IS NOT NULL),
+                    ARRAY[]::varchar[]
+                ) AS genres,  
+                COALESCE(
+                    json_agg(DISTINCT jsonb_build_object('id', p.id, 'name', p.full_name)) 
+                    FILTER (WHERE pfw.role = 'actor' AND p.id IS NOT NULL),
+                    '[]'::json
+                ) AS actors,
+                COALESCE(
+                    json_agg(DISTINCT jsonb_build_object('id', p.id, 'name', p.full_name)) 
+                    FILTER (WHERE pfw.role = 'writer' AND p.id IS NOT NULL),
+                    '[]'::json
+                ) AS writers,
+                COALESCE(
+                    json_agg(DISTINCT jsonb_build_object('id', p.id, 'name', p.full_name)) 
+                    FILTER (WHERE pfw.role = 'director' AND p.id IS NOT NULL),
+                    '[]'::json
+                ) AS directors
             FROM content.film_work fw
             LEFT JOIN content.genre_film_work gfw ON fw.id = gfw.film_work_id
             LEFT JOIN content.genre g ON g.id = gfw.genre_id
@@ -45,17 +63,25 @@ class PostgresExtractor:
             with conn.cursor() as cur:
                 cur.execute(query, (last_modified, self.batch_size))
                 records = cur.fetchall()
-                logger = get_logger(__name__)
-                logger.info(f"Extracted {len(records)} records from PostgreSQL")
+                self.logger.info(f"Extracted {len(records)} records from PostgreSQL")
 
                 converted_records = []
                 for row in records:
                     row_dict = dict(row)
+
+                    # Преобразование данных
                     if "modified" in row_dict and isinstance(row_dict["modified"], datetime):
                         row_dict["modified"] = row_dict["modified"].isoformat()
+
+                    # Гарантируем, что поля существуют даже если NULL
+                    row_dict.setdefault("genres", [])
+                    row_dict.setdefault("actors", [])
+                    row_dict.setdefault("writers", [])
+                    row_dict.setdefault("directors", [])
+
                     converted_records.append(row_dict)
 
                 if converted_records:
-                    logger.info(f"Sample record: {converted_records[0]}")
+                    self.logger.debug(f"Sample extracted record: {converted_records[0]}")
 
                 return converted_records

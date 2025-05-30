@@ -13,10 +13,7 @@ class Transformer:
         transformed = {
             "id": raw_filmwork["id"],
             "imdb_rating": raw_filmwork.get("imdb_rating"),
-            "genre": raw_filmwork.get("genre") or [],
-            "genres": [
-                {"id": "", "name": g} for g in raw_filmwork.get("genre") or []
-            ],
+            "genres": [g for g in raw_filmwork.get("genres") or []],
             "title": raw_filmwork.get("title"),
             "description": raw_filmwork.get("description"),
             "actors": raw_filmwork.get("actors") if isinstance(raw_filmwork.get("actors"), list) else [],

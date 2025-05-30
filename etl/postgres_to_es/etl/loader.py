@@ -49,41 +49,60 @@ class ElasticsearchLoader:
                 raise ValueError(f"Отсутствует обязательное поле {field}")
         return True
 
-    def prepare_records(self, db_rows):
-        """Подготовка записей для загрузки в Elasticsearch"""
+    def prepare_records(self, db_rows: list[dict]) -> list[dict]:
+        """Преобразует данные из Postgres в формат для Elasticsearch."""
         records = []
+
         for row in db_rows:
             try:
-                # Очистка полей
-                row = {k: self.clean_field(v) if isinstance(v, str) else v
-                       for k, v in row.items()}
+                film_id = str(row.get("id", "")).strip()
+                title = self.clean_field(row.get("title", ""))
 
-                # Подготовка вложенных структур
-                actors = [a for a in (row.get("actors") or []) if a and a.get("name")]
-                writers = [w for w in (row.get("writers") or []) if w and w.get("name")]
-                directors = [d for d in (row.get("directors") or []) if d and d.get("name")]
+                if not film_id or not title:
+                    raise ValueError("Пропущен обязательный ID или title")
+
+                # Список жанров как список keyword-строк
+                genres = [
+                    self.clean_field(g)
+                    for g in row.get("genres", [])
+                    if isinstance(g, str) and self.clean_field(g)
+                ]
+
+                # Подготовка персоналий
+                actors = self._prepare_people(row.get("actors", []))
+                writers = self._prepare_people(row.get("writers", []))
+                directors = self._prepare_people(row.get("directors", []))
 
                 record = {
-                    "id": str(row["id"]),
-                    "title": self.clean_field(row["title"]),
-                    "description": self.clean_field(row.get("description")),
-                    "imdb_rating": float(row["imdb_rating"]) if row.get("imdb_rating") else None,
-                    "genres": [self.clean_field(g) for g in (row.get("genre") or []) if g],
+                    "id": film_id,
+                    "title": title,
+                    "description": self.clean_field(row.get("description", "")) or "",
+                    "imdb_rating": (
+                        float(row["imdb_rating"]) if row.get("imdb_rating") is not None else None
+                    ),
+                    "genres": genres,
                     "actors": actors,
                     "writers": writers,
                     "directors": directors,
-                    "actors_names": [self.clean_field(a["name"]) for a in actors if a.get("name")],
-                    "writers_names": [self.clean_field(w["name"]) for w in writers if w.get("name")],
-                    "directors_names": [self.clean_field(d["name"]) for d in directors if d.get("name")],
+                    "actors_names": [p["name"] for p in actors],
+                    "writers_names": [p["name"] for p in writers],
+                    "directors_names": [p["name"] for p in directors],
                 }
 
-                self.validate_record(record)
+                # Глубокая очистка от datetime и др.
+                record = self.deep_convert(record)
+
                 records.append(record)
+
             except Exception as e:
-                self.logger.warning(f"Пропущена запись {row.get('id')}: {str(e)}")
+                self.logger.error(f"Ошибка подготовки записи {row.get('id')}: {str(e)}")
                 continue
 
         return records
+
+    def _prepare_people(self, people: list[dict]) -> list[dict]:
+        """Вспомогательный метод для подготовки информации о людях (актерах, режиссерах и т.д.)"""
+        return [{"id": str(p["id"]), "name": str(p["name"])} for p in people if p and p.get("name")]
 
     def create_index(self, index_name="movies", schema_path="movies_index.json"):
         """Создание индекса с заданной схемой"""
@@ -102,28 +121,36 @@ class ElasticsearchLoader:
             raise
 
     def load(self, records: list, index_name: str = "movies") -> bool:
-        """Пакетная загрузка данных в Elasticsearch"""
         actions = []
         for record in records:
             try:
-                # Проверка сериализуемости записи
-                json.dumps(record)
+                # Проверка сериализуемости
+                json_record = json.dumps(record)
                 actions.append({
                     "_index": index_name,
                     "_id": record["id"],
-                    "_source": self.deep_convert(record),
+                    "_source": json.loads(json_record)  # Двойная проверка
                 })
-            except (TypeError, ValueError) as e:
-                self.logger.warning(f"Пропущена запись {record.get('id')}: {str(e)}")
+            except Exception as e:
+                print(f"Ошибка подготовки документа {record.get('id')}: {str(e)}")
                 continue
 
         try:
-            success, errors = bulk(self.es, actions, stats_only=True)
-            self.es.indices.refresh(index=index_name)
-            self.logger.info(f"Успешно загружено {success} записей")
+            success, errors = bulk(
+                self.es,
+                actions,
+                stats_only=False,  # Получаем детали ошибок
+                raise_on_error=False
+            )
+
             if errors:
-                self.logger.warning(f"Ошибки при загрузке {errors} записей")
-            return True
+                print("\nДетали ошибок индексации:")
+                for error in errors:
+                    print(f"ID: {error['index']['_id']}, Ошибка: {error['index']['error']}")
+
+            self.es.indices.refresh(index=index_name)
+            return len(errors) == 0
+
         except Exception as e:
-            self.logger.error(f"Ошибка bulk-запроса: {str(e)}")
+            print(f"Фатальная ошибка bulk-запроса: {str(e)}")
             return False
