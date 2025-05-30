@@ -1,5 +1,6 @@
 import json
 import os
+import time
 from datetime import datetime, date
 from elasticsearch import Elasticsearch
 from elasticsearch.helpers import bulk
@@ -24,7 +25,6 @@ class ElasticsearchLoader:
 
     @staticmethod
     def deep_convert(obj):
-        """Рекурсивно преобразует объекты для сериализации"""
         if isinstance(obj, (datetime, date)):
             return obj.isoformat()
         elif isinstance(obj, dict):
@@ -34,7 +34,6 @@ class ElasticsearchLoader:
         return obj
 
     def clean_field(self, value):
-        """Очистка полей от N/A и пустых значений"""
         if isinstance(value, str):
             if value.strip().upper() in ['N/A', '']:
                 return None
@@ -42,7 +41,6 @@ class ElasticsearchLoader:
         return value
 
     def validate_record(self, record):
-        """Валидация структуры записи"""
         required_fields = ['id', 'title']
         for field in required_fields:
             if field not in record:
@@ -50,9 +48,7 @@ class ElasticsearchLoader:
         return True
 
     def prepare_records(self, db_rows: list[dict]) -> list[dict]:
-        """Преобразует данные из Postgres в формат для Elasticsearch."""
         records = []
-
         for row in db_rows:
             try:
                 film_id = str(row.get("id", "")).strip()
@@ -61,14 +57,12 @@ class ElasticsearchLoader:
                 if not film_id or not title:
                     raise ValueError("Пропущен обязательный ID или title")
 
-                # Список жанров как список keyword-строк
                 genres = [
                     self.clean_field(g)
                     for g in row.get("genres", [])
                     if isinstance(g, str) and self.clean_field(g)
                 ]
 
-                # Подготовка персоналий
                 actors = self._prepare_people(row.get("actors", []))
                 writers = self._prepare_people(row.get("writers", []))
                 directors = self._prepare_people(row.get("directors", []))
@@ -89,9 +83,7 @@ class ElasticsearchLoader:
                     "directors_names": [p["name"] for p in directors],
                 }
 
-                # Глубокая очистка от datetime и др.
                 record = self.deep_convert(record)
-
                 records.append(record)
 
             except Exception as e:
@@ -101,11 +93,9 @@ class ElasticsearchLoader:
         return records
 
     def _prepare_people(self, people: list[dict]) -> list[dict]:
-        """Вспомогательный метод для подготовки информации о людях (актерах, режиссерах и т.д.)"""
         return [{"id": str(p["id"]), "name": str(p["name"])} for p in people if p and p.get("name")]
 
     def create_index(self, index_name="movies", schema_path="movies_index.json"):
-        """Создание индекса с заданной схемой"""
         try:
             if self.es.indices.exists(index=index_name):
                 self.logger.info(f"Удаление существующего индекса {index_name}")
@@ -120,37 +110,48 @@ class ElasticsearchLoader:
             self.logger.error(f"Ошибка при создании индекса: {str(e)}")
             raise
 
-    def load(self, records: list, index_name: str = "movies") -> bool:
+    def load(self, records: list, index_name: str = "movies", retries: int = 3, delay: int = 5) -> bool:
         actions = []
         for record in records:
             try:
-                # Проверка сериализуемости
                 json_record = json.dumps(record)
                 actions.append({
                     "_index": index_name,
                     "_id": record["id"],
-                    "_source": json.loads(json_record)  # Двойная проверка
+                    "_source": json.loads(json_record)
                 })
             except Exception as e:
-                print(f"Ошибка подготовки документа {record.get('id')}: {str(e)}")
+                self.logger.error(f"Ошибка сериализации записи {record.get('id')}: {str(e)}")
                 continue
 
-        try:
-            success, errors = bulk(
-                self.es,
-                actions,
-                stats_only=False,  # Получаем детали ошибок
-                raise_on_error=False
-            )
+        for attempt in range(1, retries + 1):
+            try:
+                success, errors = bulk(
+                    self.es,
+                    actions,
+                    stats_only=False,
+                    raise_on_error=False
+                )
 
-            if errors:
-                print("\nДетали ошибок индексации:")
-                for error in errors:
-                    print(f"ID: {error['index']['_id']}, Ошибка: {error['index']['error']}")
+                if errors:
+                    self.logger.warning(f"Индексация завершена с ошибками ({len(errors)}):")
+                    for error in errors:
+                        doc_id = error.get('index', {}).get('_id')
+                        reason = error.get('index', {}).get('error', {}).get('reason', 'неизвестно')
+                        self.logger.warning(f"Документ ID {doc_id}: {reason}")
 
-            self.es.indices.refresh(index=index_name)
-            return len(errors) == 0
+                self.es.indices.refresh(index=index_name)
+                self.logger.info(f"Индексация завершена: успешно — {success}, ошибки — {len(errors)}")
+                return len(errors) == 0
 
-        except Exception as e:
-            print(f"Фатальная ошибка bulk-запроса: {str(e)}")
-            return False
+            except Exception as e:
+                self.logger.error(f"[{attempt}/{retries}] Ошибка при выполнении bulk-запроса: {str(e)}")
+                if attempt < retries:
+                    time.sleep(delay)
+                    self.logger.info("Повторная попытка индексации...")
+                else:
+                    self.logger.critical("Превышено количество попыток индексации.")
+                    return False
+
+        # Если ни один блок не сработал (например, actions пустой)
+        return False

@@ -2,5 +2,5 @@ psycopg2-binary >= 2.9.10
 elasticsearch <9.0.0
 redis >= 6.2.0
 backoff >= 1.11.1
-pydantic>=1.10.0
+pydantic>=2.11.5
 pydantic-settings >= 2.9.0
